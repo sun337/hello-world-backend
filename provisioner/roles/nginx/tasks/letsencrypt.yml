@@ -1,0 +1,46 @@
+---
+- name: update the apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 7200
+  become: yes
+
+- name: Install Certbot
+  apt:
+    pkg:
+      - certbot
+      - python3-certbot-nginx
+    state: present
+    cache_valid_time: 300
+
+- name: create certbot folder
+  become: yes
+  file: path={{ letsencrypt_challenge_root }} state=directory owner={{ user }} group={{ nginx_user }} mode="u=rwx,g=rwxs,o=r"
+
+- name: upgrade ca-certificates
+  apt:
+    name: ca-certificates
+    state: latest
+    cache_valid_time: 300
+
+- name: Check if certificate already exists.
+  stat:
+    path: /etc/letsencrypt/live/{{ domain_name | first | replace('*.', '') }}/cert.pem
+  register: letsencrypt_cert
+
+- name: Reload nginx
+  service: name=nginx state=reloaded
+
+- name: request cert
+  command: "certbot certonly --nginx --domains {{ domain_name }} --email {{ letsencrypt_email }} --agree-tos --non-interactive"
+  args:
+    creates: "{{ letsencrypt_ssl_cert_dir }}"
+  become: yes
+  when: not letsencrypt_cert.stat.exists
+
+- name: remove any cert diretory if exist
+  file: path={{ ssl_cert_dir }}/{{ domain_name }} state=absent
+
+- name: symblink certificates
+  file: src={{ letsencrypt_ssl_cert_dir }} dest={{ ssl_cert_dir }}/{{ domain_name }} owner={{ user }} group=www-data state=link
+

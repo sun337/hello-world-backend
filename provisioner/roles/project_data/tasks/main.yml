@@ -1,0 +1,80 @@
+---
+- name: Download latest code from {{ project_repo_url }}, branch {{ repo_version }}
+  git: repo={{ project_repo_url }} dest={{ project_path }} version={{ repo_version }} accept_hostkey=true
+  become: false
+  register: gitresult
+  when: vm == 0
+  tags: ['always']
+
+- debug: msg="Git SHA-1 before={{ gitresult.before }} after={{ gitresult.after }}"
+  when: vm == 0
+  tags: ['always']
+
+- name: Ensure python virtualenv folder exist
+  command: python3 -m venv {{ venv_path }} creates={{ venv_path }}
+  become: false
+  tags: ['always']
+
+- name: Install binaries for postgres postgis
+  apt:
+    pkg:
+      - gdal-bin
+    state: present
+    cache_valid_time: 300
+  when: pg_gis
+
+- name: Install python dependencies
+  pip: requirements={{ project_path }}/{{ django_requirements_file }}  executable={{ venv_path }}/bin/pip
+  become: false
+  tags: ['deploy']
+
+- name: Copy env configuration, if it doesn't exist
+  template: src=env.env.j2 dest={{ project_path }}/.env force=no
+  become: false
+  tags: ['configure']
+
+- name: Ensure gettext package is installed for translations
+  apt:
+    pkg: gettext
+    state: present
+
+- name: Run collect static
+  django_manage: command=collectstatic app_path={{ project_path }} virtualenv={{ venv_path }}
+  become: false
+  tags: ['deploy']
+
+- name: Run database migrations
+  django_manage: command=migrate app_path={{ project_path }} virtualenv={{ venv_path }}
+  become: false
+  tags: ['deploy']
+
+- import_tasks: uwsgi-setup.yml
+
+- name: Run compilemessages for static translations
+  django_manage: command=compilemessages app_path={{ project_path }} virtualenv={{ venv_path }}
+  become: false
+  tags: ['deploy']
+
+- name: Reload uwsgi processes
+  command: uwsgi --reload {{ uwsgi_pid_file }}
+  become: true
+  when: not uwsgiconf.changed
+  tags: ['deploy']
+
+- name: apt_get install graphviz for db schema generation
+  apt: pkg=graphviz state=present
+
+- name: Generate DB Schema.
+  shell: "source {{ venv_path }}/bin/activate && python bin/generate_db_schema.py"
+  args:
+    chdir: "{{ project_path }}"
+    executable: /bin/bash
+  become: false
+  tags: ['deploy', 'documentation']
+
+- name: Build documentation for "/docs" url.
+  command: "{{ venv_path }}/bin/mkdocs build"
+  args:
+    chdir: "{{ project_path }}"
+  become: false
+  tags: ['deploy', 'documentation']
